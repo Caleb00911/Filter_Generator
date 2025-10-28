@@ -1,4 +1,7 @@
 
+#idea: add a list of rules and run through the list
+#TODO: add topology rule and enumerate over multiple circuits
+
 class Graph:
     def __init__(self):
         self.nodes = {}
