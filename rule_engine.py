@@ -1,7 +1,10 @@
+#ideas: implement rewrite to combine stages
+
 
 import itertools, re
 
 topologies = ['Sallen', 'RC', 'Ladder']
+types = ['Butterworth', 'Cheb1', 'Cheb2']
 
 class Graph:
     def __init__(self):
@@ -22,15 +25,27 @@ class Graph:
 
     def __repr__(self):
         return f"Graph(nodes={self.nodes}, edges={self.edges})"
-
-def topo_combos(g, n):
-    results = []
-    for i in itertools.product(topologies, repeat = n):
+    
+def apply_types(g, n):
+    type_results = []
+    for i in itertools.product(types, repeat = n):
         cand = g.copy()
         for j in range(len(i)):
             stage = f"Stage{j+1}"
-            cand.nodes[stage]["Topology"] = i[j]
-        results.append(cand)
+            cand.nodes[stage]["Type"] = i[j]
+        type_results.append(cand)
+    return type_results
+
+def apply_topologies(types, n):
+    results = []
+    #pairs = list(itertools.product(topologies, types))
+    for i in itertools.product(topologies, repeat = n):
+        for graph in types:
+            cand = graph.copy()
+            for j in range(len(i)):
+                stage = f"Stage{j+1}"
+                cand.nodes[stage]["Topology"] = i[j]
+            results.append(cand)
     return results
 
 def rule_base(g, n, load):
@@ -40,12 +55,9 @@ def rule_base(g, n, load):
 def rule_cascade(g, n, load):
     prev = apply_rule(g, n - 1, load)
     stage = f"Stage{n}"
-    g.add_node(stage, type='filter')
+    g.add_node(stage, type='filter', order = 1)
     cascade(g, stage, prev)
     return stage
-
-#def rule_apply_topology(g, stage_name, topologies):
-    #g.nodes[stage_name]['Topology'] = topologies
 
 def cascade(g, c1, c2):
         g.add_edge(c1, c2)
@@ -60,6 +72,7 @@ def apply_rule(g, n, load):
 G = Graph()
 load = 'load'
 apply_rule(G, 4, load)
-results = topo_combos(G, 4)
+type_results = apply_types(G, 4)
+print(len(type_results))
+results = apply_topologies(type_results, 4)
 print(len(results))
-print(results[20])
