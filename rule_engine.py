@@ -1,10 +1,9 @@
 #ideas: implement rewrite to combine stages
 
-
 import itertools, re
 
-topologies = ['Sallen', 'RC', 'Ladder']
-types = ['Butterworth', 'Cheb1', 'Cheb2']
+topologies = ['RC', 'LR', 'Sallen-Key']
+types = ['Butterworth', 'Cheb']
 
 class Graph:
     def __init__(self):
@@ -26,27 +25,97 @@ class Graph:
     def __repr__(self):
         return f"Graph(nodes={self.nodes}, edges={self.edges})"
     
+    def remove_node(self, node):
+        if node in self.nodes:
+            del self.nodes[node]
+        self.edges = [(s, d, a) for (s, d, a) in self.edges if s != node and d != node]
+    
+    def succs(self, node):
+    # [(dst, attrs), ...] for edges node -> dst
+        return [(d, a) for (s, d, a) in self.edges if s == node]
+
+    def preds(self, node):
+    # [(src, attrs), ...] for edges src -> node
+        return [(s, a) for (s, d, a) in self.edges if d == node]
+
+    
+    def combine(self, n1, n2):
+        in_edges = self.preds(n1)
+        out_edges = self.succs(n2)
+
+        a1 = self.nodes[n1]
+        a2 = self.nodes[n2]
+        merged = {
+            'type' : a1.get('type'),
+            'order': a1.get('order') + a2.get('order')
+        }
+
+        if a1.get("type") == a2.get("type"):
+            merged["type"] = a1.get("type")
+        #if a1.get("Topology") == a2.get("Topology"):
+            #merged["Topology"] = a1.get("Topology")
+        
+        self.edges = [(s, d, a) for (s, d, a) in self.edges if s not in (n1, n2) and d not in (n1, n2)]
+        self.nodes[n1] = merged
+        self.remove_node(n2)
+
+        for p, a in in_edges:
+            if p != n2:  # avoid recreating the internal edge n2->n1
+                self.add_edge(p, n1, **a)
+        for s, a in out_edges:
+            if s != n1:  # avoid self-loop
+                self.add_edge(n1, s, **a)
+
+    def combine_types(self):
+        merges = 0
+        changed = True
+        while changed:
+            changed = False
+            for(u, v, eattrs) in list(self.edges):
+                nu, nv = self.nodes[u], self.nodes[v]
+                if(nu.get('type') == nv.get('type')):
+                    self.combine(u, v)
+                    merges += 1
+                    changed = True
+                    break
+        return merges
+    
 def apply_types(g, n):
     type_results = []
     for i in itertools.product(types, repeat = n):
         cand = g.copy()
         for j in range(len(i)):
             stage = f"Stage{j+1}"
-            cand.nodes[stage]["Type"] = i[j]
+            cand.nodes[stage]["type"] = i[j]
         type_results.append(cand)
     return type_results
 
-def apply_topologies(types, n):
+def apply_topologies(types):
     results = []
-    #pairs = list(itertools.product(topologies, types))
-    for i in itertools.product(topologies, repeat = n):
-        for graph in types:
+    for graph in types:
+        stages = [n for n in graph.nodes if n != 'load']
+        for combo in itertools.product(topologies, repeat = len(stages)):
             cand = graph.copy()
-            for j in range(len(i)):
-                stage = f"Stage{j+1}"
-                cand.nodes[stage]["Topology"] = i[j]
+            for stage, topo in zip(stages, combo):
+                cand.nodes[stage]['topology'] = topo
             results.append(cand)
     return results
+
+# def apply_topologies(types, n):
+#     results = []
+#     for i in itertools.product(topologies, repeat = n):
+#         for graph in types:
+#             cand = graph.copy()
+#             for stage in cand.nodes:
+#                 if stage != 'load':
+#                     cand.nodes[stage]['topology'] = i[]
+
+
+#             for j in range(len(i)):
+#                 stage = f"Stage{j+1}"
+#                 cand.nodes[stage]["Topology"] = i[j]
+#             results.append(cand)
+#     return results
 
 def rule_base(g, n, load):
     g.add_node(load, type='load')
@@ -55,7 +124,7 @@ def rule_base(g, n, load):
 def rule_cascade(g, n, load):
     prev = apply_rule(g, n - 1, load)
     stage = f"Stage{n}"
-    g.add_node(stage, type='filter', order = 1)
+    g.add_node(stage, order = 1)
     cascade(g, stage, prev)
     return stage
 
@@ -69,10 +138,24 @@ def apply_rule(g, n, load):
     else:
         return rule_cascade(g, n, load)
 
+
+
 G = Graph()
 load = 'load'
 apply_rule(G, 4, load)
 type_results = apply_types(G, 4)
 print(len(type_results))
-results = apply_topologies(type_results, 4)
+for i in range(len(type_results)):
+     type_results[i].combine_types()
+
+print(len(type_results))
+
+results = apply_topologies(type_results)
 print(len(results))
+print (results[67].nodes)
+
+
+#print(G.nodes)
+#print(len(type_results))
+#results = apply_topologies(type_results, 4)
+#print(len(results))
