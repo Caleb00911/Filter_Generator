@@ -1,8 +1,12 @@
 #ideas: implement rewrite to combine stages
 
 import itertools, re
+import PySpice.Logging.Logging as Logging
+from PySpice.Spice.Netlist import Circuit
+from PySpice.Spice.Netlist import SubCircuitFactory
+from PySpice.Unit import *
 
-topologies = ['RC', 'LR', 'Sallen-Key']
+topologies = ['RC_LP', 'Sallen-Key_LP']
 types = ['Butterworth', 'Cheb']
 
 class Graph:
@@ -38,7 +42,6 @@ class Graph:
     # [(src, attrs), ...] for edges src -> node
         return [(s, a) for (s, d, a) in self.edges if d == node]
 
-    
     def combine(self, n1, n2):
         in_edges = self.preds(n1)
         out_edges = self.succs(n2)
@@ -73,7 +76,7 @@ class Graph:
             changed = False
             for(u, v, eattrs) in list(self.edges):
                 nu, nv = self.nodes[u], self.nodes[v]
-                if(nu.get('type') == nv.get('type')):
+                if(nu.get('type') == nv.get('type') and nu.get('order') < 2 and nv.get('order') < 2):
                     self.combine(u, v)
                     merges += 1
                     changed = True
@@ -90,6 +93,7 @@ def apply_types(g, n):
         type_results.append(cand)
     return type_results
 
+
 def apply_topologies(types):
     results = []
     for graph in types:
@@ -100,22 +104,6 @@ def apply_topologies(types):
                 cand.nodes[stage]['topology'] = topo
             results.append(cand)
     return results
-
-# def apply_topologies(types, n):
-#     results = []
-#     for i in itertools.product(topologies, repeat = n):
-#         for graph in types:
-#             cand = graph.copy()
-#             for stage in cand.nodes:
-#                 if stage != 'load':
-#                     cand.nodes[stage]['topology'] = i[]
-
-
-#             for j in range(len(i)):
-#                 stage = f"Stage{j+1}"
-#                 cand.nodes[stage]["Topology"] = i[j]
-#             results.append(cand)
-#     return results
 
 def rule_base(g, n, load):
     g.add_node(load, type='load')
@@ -138,24 +126,106 @@ def apply_rule(g, n, load):
     else:
         return rule_cascade(g, n, load)
 
+    
+    
+def del_mismatch(graphs):
+    keep = []
+    for graph in graphs:
+        ok = True
+        for node_name, attrs in graph.nodes.items():
+            if attrs.get('type') != 'Butterworth' and attrs.get('order', 0) < 2 and attrs.get('type') != 'load':
+                ok = False
+                break
+        if ok:
+            keep.append(graph)
+    return keep
+
+
+
+class RC_LP(SubCircuitFactory):
+    NAME = 'RC_LP'
+    NODES = ('input', 'out', '0')
+    def __init__(self, R, C):
+        super().__init__()
+        self.R(1, 'input', 'out', R)
+        self.C(1, 'out', '0', C)
+
+class SALLEN_KEY_LP(SubCircuitFactory):
+    NAME = 'SALLEN_KEY_LP'
+    NODES = ('input', 'out', '0')
+
+    def __init__(self, R1, R2, C1, C2, gain = 1e6):
+        super().__init__()
+        n1 = 'n1'
+        n2 = 'n2'
+
+        self.R(1, 'input', n1, R1)
+        self.R(2, n1, n2, R2)
+
+        self.C(1, n1, 'out', C1)
+        self.C(2, n2, '0', C2)
+
+        self.VCVS(1, 'out', '0', n2, 'out', gain)
+
+
+def emit(graphs):
+    results = []
+    cand = 1
+    for graph in graphs:
+        o = 1
+        count = 1
+        circuit = Circuit(f'Candidate{cand}')
+        circuit.subcircuit(SALLEN_KEY_LP(
+            R1=10e3,
+            R2=10e3,
+            C1=10e-9,
+            C2=10e-9
+        ))
+        circuit.subcircuit(RC_LP(
+            R = 10e3,
+            C = 10e-9
+        ))
+        for node in graph.nodes:
+            attrs = graph.nodes[node]
+            topo = attrs.get('topology')
+            if topo is None:
+                continue
+            if(topo == 'Sallen-Key_LP'):
+                circuit.X(f'{count}', 'SALLEN_KEY_LP', f'n{o}', f'n{o+1}', '0')
+                count += 1
+                o += 1
+            elif(topo == 'RC_LP'):
+                circuit.X(f'{count}', 'RC_LP', f'n{o}', f'n{o+1}', '0')
+                count += 1
+                o += 1
+        results.append(circuit)
+        cand += 1
+    return results
 
 
 G = Graph()
 load = 'load'
 apply_rule(G, 4, load)
 type_results = apply_types(G, 4)
-print(len(type_results))
 for i in range(len(type_results)):
-     type_results[i].combine_types()
+    type_results[i].combine_types()
 
-print(len(type_results))
 
 results = apply_topologies(type_results)
-print(len(results))
-print (results[67].nodes)
+# print (results[67].nodes)
 
+p = del_mismatch(results)
 
-#print(G.nodes)
-#print(len(type_results))
-#results = apply_topologies(type_results, 4)
-#print(len(results))
+#print(p[10].edges)
+
+circuits = emit(p)
+
+print(circuits[10])
+
+# print(len(p))
+# print(p[42].nodes)
+# print(G.nodes)
+# print(len(type_results))
+# results = apply_topologies(type_results, 4)
+# print(len(results))
+
