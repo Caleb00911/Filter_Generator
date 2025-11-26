@@ -7,7 +7,7 @@ from PySpice.Spice.Netlist import SubCircuitFactory
 from PySpice.Unit import *
 
 topologies = ['RC_LP', 'Sallen-Key_LP']
-types = ['Butterworth', 'Cheb']
+types = ['Butterworth', '3dbCheb']
 
 class Graph:
     def __init__(self):
@@ -76,7 +76,7 @@ class Graph:
             changed = False
             for(u, v, eattrs) in list(self.edges):
                 nu, nv = self.nodes[u], self.nodes[v]
-                if(nu.get('type') == nv.get('type') and nu.get('order') < 2 and nv.get('order') < 2):
+                if(nu.get('type') == nv.get('type')):
                     self.combine(u, v)
                     merges += 1
                     changed = True
@@ -127,7 +127,7 @@ def apply_rule(g, n, load):
         return rule_cascade(g, n, load)
 
     
-    
+#maybe get rid of     
 def del_mismatch(graphs):
     keep = []
     for graph in graphs:
@@ -145,10 +145,18 @@ def del_mismatch(graphs):
 class RC_LP(SubCircuitFactory):
     NAME = 'RC_LP'
     NODES = ('input', 'out', '0')
-    def __init__(self, R, C):
+    def __init__(self, R1, R2, R3, C, gain = 1e6):
         super().__init__()
-        self.R(1, 'input', 'out', R)
-        self.C(1, 'out', '0', C)
+        n1 = 'n1'
+        n2 = 'n2'
+
+        self.R(1, 'input', n1, R1)
+        self.R(2, n2, '0', R2)
+        self.R(3, n2, 'out', R3)
+
+        self.C(1, n1, '0', C)
+
+        self.VCVS(1, 'out', '0', n1, n2, gain)
 
 class SALLEN_KEY_LP(SubCircuitFactory):
     NAME = 'SALLEN_KEY_LP'
@@ -175,6 +183,7 @@ def emit(graphs):
         o = 1
         count = 1
         circuit = Circuit(f'Candidate{cand}')
+        circuit.V('input', 'n1', '0', 'dc 0 ac 1')
         circuit.subcircuit(SALLEN_KEY_LP(
             R1=10e3,
             R2=10e3,
@@ -182,22 +191,39 @@ def emit(graphs):
             C2=10e-9
         ))
         circuit.subcircuit(RC_LP(
-            R = 10e3,
+            R1 = 10e3,
+            R2 = 10e3,
+            R3 = 10e3,
             C = 10e-9
         ))
+        
         for node in graph.nodes:
             attrs = graph.nodes[node]
+            order = attrs.get('order')
             topo = attrs.get('topology')
             if topo is None:
                 continue
             if(topo == 'Sallen-Key_LP'):
-                circuit.X(f'{count}', 'SALLEN_KEY_LP', f'n{o}', f'n{o+1}', '0')
-                count += 1
-                o += 1
+                if(order % 2 == 0):
+                    cascades = order // 2
+                    for i in range(cascades):
+                        circuit.X(f'{count}', 'SALLEN_KEY_LP', f'n{o}', f'n{o+1}', '0')
+                        count += 1
+                        o += 1
+                elif (order % 2 != 0):
+                    cascades = order // 2
+                    for i in range(cascades):
+                        circuit.X(f'{count}', 'SALLEN_KEY_LP', f'n{o}', f'n{o+1}', '0')
+                        count += 1
+                        o += 1
+                    circuit.X(f'{count}', 'RC_LP', f'n{o}', f'n{o+1}', '0')
+                    count += 1
+                    o += 1
             elif(topo == 'RC_LP'):
-                circuit.X(f'{count}', 'RC_LP', f'n{o}', f'n{o+1}', '0')
-                count += 1
-                o += 1
+                for i in range(order):
+                    circuit.X(f'{count}', 'RC_LP', f'n{o}', f'n{o+1}', '0')
+                    count += 1
+                    o += 1
         results.append(circuit)
         cand += 1
     return results
@@ -205,8 +231,8 @@ def emit(graphs):
 
 G = Graph()
 load = 'load'
-apply_rule(G, 4, load)
-type_results = apply_types(G, 4)
+apply_rule(G, 8, load)
+type_results = apply_types(G, 8)
 for i in range(len(type_results)):
     type_results[i].combine_types()
 
@@ -216,11 +242,11 @@ results = apply_topologies(type_results)
 
 p = del_mismatch(results)
 
-#print(p[10].edges)
+print(len(p))
 
 circuits = emit(p)
 
-print(circuits[10])
+print(circuits[476])
 
 # print(len(p))
 # print(p[42].nodes)
