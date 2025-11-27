@@ -5,9 +5,63 @@ import PySpice.Logging.Logging as Logging
 from PySpice.Spice.Netlist import Circuit
 from PySpice.Spice.Netlist import SubCircuitFactory
 from PySpice.Unit import *
+import math
 
-topologies = ['RC_LP', 'Sallen-Key_LP']
+topologies = ['Sallen-Key_LP']
 types = ['Butterworth', '3dbCheb']
+cheb_3db_table = cheb_table = {
+    2: [(0.8414, 1.3049)],
+    3: [(0.9160, 3.0678), (0.2986, None)],
+    4: [(0.4426, 1.0765), (0.9503, 5.5770)],
+    5: [(0.6140, 2.1380), (0.9675, 8.8111), (0.1775, None)],
+    6: [(0.2980, 1.0441), (0.7224, 3.4597), (0.9771, 12.7899)],
+    7: [(0.4519, 1.9821), (0.7920, 5.0193), (0.9831, 17.4929), (0.1265, None)],
+    8: [(0.2228, 1.0558), (0.5665, 3.0789), (0.8388, 6.8302), (0.9870, 22.8481)],
+    9: [(0.3559, 1.9278), (0.6503, 4.3179), (0.8716, 8.8756),
+        (0.9897, 28.9400), (0.0983, None)],
+    10: [(0.1796, 1.0289), (0.4626, 2.9350), (0.7126, 5.7012),
+         (0.8954, 11.1646), (0.9916, 35.9274)]
+}
+
+butterworth_table = {
+    2: [(1.0000, 0.7071)],
+    
+    3: [(1.0000, 1.0000),
+        (1.0000, None)],
+    
+    4: [(1.0000, 0.5412),
+        (1.0000, 1.3065)],
+    
+    5: [(1.0000, 0.6180),
+        (1.0000, 1.6181),
+        (1.0000, None)],
+    
+    6: [(1.0000, 0.5177),
+        (1.0000, 0.7071),
+        (1.0000, 1.9320)],
+    
+    7: [(1.0000, 0.5549),
+        (1.0000, 0.8019),
+        (1.0000, 2.2472),
+        (1.0000, None)],
+    
+    8: [(1.0000, 0.5098),
+        (1.0000, 0.6013),
+        (1.0000, 0.8999),
+        (1.0000, 2.5628)],
+    
+    9: [(1.0000, 0.5321),
+        (1.0000, 0.6527),
+        (1.0000, 1.0000),
+        (1.0000, 2.8802),
+        (1.0000, None)],
+    
+    10: [(1.0000, 0.5062),
+         (1.0000, 0.5612),
+         (1.0000, 0.7071),
+         (1.0000, 1.1013),
+         (1.0000, 3.1969)]
+}
 
 class Graph:
     def __init__(self):
@@ -145,35 +199,35 @@ def del_mismatch(graphs):
 class RC_LP(SubCircuitFactory):
     NAME = 'RC_LP'
     NODES = ('input', 'out', '0')
-    def __init__(self, R1, R2, R3, C, gain = 1e6):
+    def __init__(self, R1, C1, gain = 1e6):
         super().__init__()
         n1 = 'n1'
-        n2 = 'n2'
 
         self.R(1, 'input', n1, R1)
-        self.R(2, n2, '0', R2)
-        self.R(3, n2, 'out', R3)
 
-        self.C(1, n1, '0', C)
+        self.C(1, n1, '0', C1)
 
-        self.VCVS(1, 'out', '0', n1, n2, gain)
+        self.VCVS(1, 'out', '0', n1, 'out', gain)
 
 class SALLEN_KEY_LP(SubCircuitFactory):
     NAME = 'SALLEN_KEY_LP'
     NODES = ('input', 'out', '0')
 
-    def __init__(self, R1, R2, C1, C2, gain = 1e6):
+    def __init__(self, R1, R2, R3, R4,  C1, C2, gain = 1e6):
         super().__init__()
         n1 = 'n1'
         n2 = 'n2'
+        n3 = 'n3'
 
         self.R(1, 'input', n1, R1)
         self.R(2, n1, n2, R2)
+        self.R(3, n3, '0', R3)
+        self.R(4, n3, 'out', R4)
 
         self.C(1, n1, 'out', C1)
         self.C(2, n2, '0', C2)
 
-        self.VCVS(1, 'out', '0', n2, 'out', gain)
+        self.VCVS(1, 'out', '0', n2, n3, gain)
 
 
 def emit(graphs):
@@ -183,50 +237,136 @@ def emit(graphs):
         o = 1
         count = 1
         circuit = Circuit(f'Candidate{cand}')
-        circuit.V('input', 'n1', '0', 'dc 0 ac 1')
-        circuit.subcircuit(SALLEN_KEY_LP(
-            R1=10e3,
-            R2=10e3,
-            C1=10e-9,
-            C2=10e-9
-        ))
-        circuit.subcircuit(RC_LP(
-            R1 = 10e3,
-            R2 = 10e3,
-            R3 = 10e3,
-            C = 10e-9
-        ))
-        
+        circuit.V('input', 'n1', '0', 'dc 0 ac 1')      
         for node in graph.nodes:
             attrs = graph.nodes[node]
             order = attrs.get('order')
             topo = attrs.get('topology')
-            if topo is None:
-                continue
-            if(topo == 'Sallen-Key_LP'):
-                if(order % 2 == 0):
-                    cascades = order // 2
-                    for i in range(cascades):
-                        circuit.X(f'{count}', 'SALLEN_KEY_LP', f'n{o}', f'n{o+1}', '0')
+            type = attrs.get('type')
+            stages = []
+            if order == 1:
+                vals = design_rc_lp(1000, 1, 10e-9)
+                rc_name = f'RC_LP_{cand}_{count}'
+                RC_LP.NAME = rc_name
+                rc_subckt = RC_LP(
+                    R1 = vals.get('R1'),
+                    C1 = vals.get('C1')
+                )
+                circuit.subcircuit(rc_subckt)
+                circuit.X(f'{count}', rc_name, f'n{o}', f'n{o+1}', '0')
+                count += 1
+                o += 1
+            elif(topo == 'Sallen-Key_LP'):
+                if(type == '3dbCheb'):
+                    stages = cheb3b_stage_specs(order)
+                elif(type == 'Butterworth'):
+                    stages = butterworth_stage_specs(order)
+                for stage in stages:
+                    if(stage[1] != None):
+                        vals = design_lp_sallen(stage[0], 1000, stage[1], 10e-9)
+                        sk_name = f'SALLEN_KEY_LP_{cand}_{count}'
+                        SALLEN_KEY_LP.NAME = sk_name
+
+
+                        sk_subckt = SALLEN_KEY_LP(
+                            R1 = vals.get('R1'),
+                            R2 = vals.get('R2'),
+                            R3 = vals.get('R3'),
+                            R4 = vals.get('R4'),
+                            C1 = vals.get('C1'),
+                            C2 = vals.get('C2')
+                        )
+
+                        circuit.subcircuit(sk_subckt)
+                        circuit.X(f'{count}', sk_name, f'n{o}', f'n{o+1}', '0')
                         count += 1
                         o += 1
-                elif (order % 2 != 0):
-                    cascades = order // 2
-                    for i in range(cascades):
-                        circuit.X(f'{count}', 'SALLEN_KEY_LP', f'n{o}', f'n{o+1}', '0')
+                    elif(stage[1] == None):
+                        vals = design_rc_lp(1000, stage[0], 10e-9)
+                        rc_name = f'RC_LP_{cand}_{count}'
+                        RC_LP.NAME = rc_name
+
+                        rc_subckt = RC_LP(
+                            R1 = vals.get('R1'),
+                            C1 = vals.get('C1')
+                        )
+
+                        circuit.subcircuit(rc_subckt)
+                        circuit.X(f'{count}', rc_name, f'n{o}', f'n{o+1}', '0')
                         count += 1
                         o += 1
-                    circuit.X(f'{count}', 'RC_LP', f'n{o}', f'n{o+1}', '0')
-                    count += 1
-                    o += 1
-            elif(topo == 'RC_LP'):
-                for i in range(order):
-                    circuit.X(f'{count}', 'RC_LP', f'n{o}', f'n{o+1}', '0')
-                    count += 1
-                    o += 1
         results.append(circuit)
-        cand += 1
+        cand+=1
     return results
+
+
+
+    #             if(order % 2 == 0):
+    #                 cascades = order // 2
+    #                 for i in range(cascades):
+    #                     circuit.X(f'{count}', 'SALLEN_KEY_LP', f'n{o}', f'n{o+1}', '0')
+    #                     count += 1
+    #                     o += 1
+    #             elif (order % 2 != 0):
+    #                 cascades = order // 2
+    #                 for i in range(cascades):
+    #                     circuit.X(f'{count}', 'SALLEN_KEY_LP', f'n{o}', f'n{o+1}', '0')
+    #                     count += 1
+    #                     o += 1
+    #                 circuit.X(f'{count}', 'RC_LP', f'n{o}', f'n{o+1}', '0')
+    #                 count += 1
+    #                 o += 1
+    #         elif(topo == 'RC_LP'):
+    #             for i in range(order):
+    #                 circuit.X(f'{count}', 'RC_LP', f'n{o}', f'n{o+1}', '0')
+    #                 count += 1
+    #                 o += 1
+    #     results.append(circuit)
+    #     cand += 1
+    # return results
+
+
+def cheb3b_stage_specs(order):
+    stages = []
+    for fsf, q in cheb_3db_table[order]:
+        stages.append((fsf, q))
+    return stages
+
+def butterworth_stage_specs(order):
+    stages = []
+    for fsf, q in butterworth_table[order]:
+        stages.append((fsf, q))
+    return stages
+
+def design_lp_sallen(fsf, fc, Q, C_val):
+    f0 = fsf * fc
+    C1 = C2 = C_val
+    R = 1 / (2 * math.pi * C_val * f0)
+
+    K = 3-(1/Q)
+
+    # k = 1 + r3/r4
+    R4 = 1000
+    R3 = R4 / (K - 1)
+
+    return {
+        'R1': R,
+        'R2': R,
+        'R3' : R3,
+        'R4' : R4,
+        'C1' : C1,
+        'C2' : C2,
+    }
+
+def design_rc_lp(fc, fsf, C_val):
+    f0 = fsf * fc
+    C1 = C_val
+    R1 = 1 / (2*math.pi*C_val*f0)
+
+    return{
+        'R1': R1,
+        'C1': C1
+    }
 
 
 G = Graph()
@@ -242,11 +382,11 @@ results = apply_topologies(type_results)
 
 p = del_mismatch(results)
 
-print(len(p))
+print(p[27].nodes)
 
 circuits = emit(p)
 
-print(circuits[476])
+print(circuits[27])
 
 # print(len(p))
 # print(p[42].nodes)
@@ -254,4 +394,5 @@ print(circuits[476])
 # print(len(type_results))
 # results = apply_topologies(type_results, 4)
 # print(len(results))
+
 
