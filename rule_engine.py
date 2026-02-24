@@ -1,4 +1,14 @@
-#ideas: implement rewrite to combine stages
+"""Filter candidate generator and netlist emitter.
+
+This script:
+1) Builds a stage graph for an Nth-order low-pass filter.
+2) Enumerates filter family assignments (Butterworth / 3 dB Chebyshev).
+3) Merges adjacent stages with matching family into higher-order blocks.
+4) Assigns circuit topologies to those blocks.
+5) Emits concrete PySpice circuits from the resulting candidates.
+"""
+
+# ideas: implement rewrite to combine stages
 
 import itertools, re
 import PySpice.Logging.Logging as Logging
@@ -6,64 +16,16 @@ from PySpice.Spice.Netlist import Circuit
 from PySpice.Spice.Netlist import SubCircuitFactory
 from PySpice.Unit import *
 import math
+from scipy.signal import *
+import cmath
+from typing import *
 
 topologies = ['Sallen-Key_LP']
 types = ['Butterworth', '3dbCheb']
-cheb_3db_table = cheb_table = {
-    2: [(0.8414, 1.3049)],
-    3: [(0.9160, 3.0678), (0.2986, None)],
-    4: [(0.4426, 1.0765), (0.9503, 5.5770)],
-    5: [(0.6140, 2.1380), (0.9675, 8.8111), (0.1775, None)],
-    6: [(0.2980, 1.0441), (0.7224, 3.4597), (0.9771, 12.7899)],
-    7: [(0.4519, 1.9821), (0.7920, 5.0193), (0.9831, 17.4929), (0.1265, None)],
-    8: [(0.2228, 1.0558), (0.5665, 3.0789), (0.8388, 6.8302), (0.9870, 22.8481)],
-    9: [(0.3559, 1.9278), (0.6503, 4.3179), (0.8716, 8.8756),
-        (0.9897, 28.9400), (0.0983, None)],
-    10: [(0.1796, 1.0289), (0.4626, 2.9350), (0.7126, 5.7012),
-         (0.8954, 11.1646), (0.9916, 35.9274)]
-}
 
-butterworth_table = {
-    2: [(1.0000, 0.7071)],
-    
-    3: [(1.0000, 1.0000),
-        (1.0000, None)],
-    
-    4: [(1.0000, 0.5412),
-        (1.0000, 1.3065)],
-    
-    5: [(1.0000, 0.6180),
-        (1.0000, 1.6181),
-        (1.0000, None)],
-    
-    6: [(1.0000, 0.5177),
-        (1.0000, 0.7071),
-        (1.0000, 1.9320)],
-    
-    7: [(1.0000, 0.5549),
-        (1.0000, 0.8019),
-        (1.0000, 2.2472),
-        (1.0000, None)],
-    
-    8: [(1.0000, 0.5098),
-        (1.0000, 0.6013),
-        (1.0000, 0.8999),
-        (1.0000, 2.5628)],
-    
-    9: [(1.0000, 0.5321),
-        (1.0000, 0.6527),
-        (1.0000, 1.0000),
-        (1.0000, 2.8802),
-        (1.0000, None)],
-    
-    10: [(1.0000, 0.5062),
-         (1.0000, 0.5612),
-         (1.0000, 0.7071),
-         (1.0000, 1.1013),
-         (1.0000, 3.1969)]
-}
 
 class Graph:
+    """Minimal directed graph with mutable node/edge attributes."""
     def __init__(self):
         self.nodes = {}
         self.edges = []
@@ -97,6 +59,7 @@ class Graph:
         return [(s, a) for (s, d, a) in self.edges if d == node]
 
     def combine(self, n1, n2):
+        # Merge two connected stage nodes into n1 (order adds, type is preserved).
         in_edges = self.preds(n1)
         out_edges = self.succs(n2)
 
@@ -124,6 +87,7 @@ class Graph:
                 self.add_edge(n1, s, **a)
 
     def combine_types(self):
+        # Repeatedly merge adjacent stages when both share the same filter family.
         merges = 0
         changed = True
         while changed:
@@ -138,6 +102,7 @@ class Graph:
         return merges
     
 def apply_types(g, n):
+    # Generate all possible type assignments across n stages.
     type_results = []
     for i in itertools.product(types, repeat = n):
         cand = g.copy()
@@ -149,6 +114,7 @@ def apply_types(g, n):
 
 
 def apply_topologies(types):
+    # For each type-assigned graph, generate all topology combinations.
     results = []
     for graph in types:
         stages = [n for n in graph.nodes if n != 'load']
@@ -160,10 +126,12 @@ def apply_topologies(types):
     return results
 
 def rule_base(g, n, load):
+    # Base grammar rule: terminal load node.
     g.add_node(load, type='load')
     return load
 
 def rule_cascade(g, n, load):
+    # Recursive grammar rule: prepend a StageN before the previous chain.
     prev = apply_rule(g, n - 1, load)
     stage = f"Stage{n}"
     g.add_node(stage, order = 1)
@@ -171,17 +139,19 @@ def rule_cascade(g, n, load):
     return stage
 
 def cascade(g, c1, c2):
+        # Connect one stage output into the next stage input.
         g.add_edge(c1, c2)
         return c2
 
 def apply_rule(g, n, load):
+    # Recursive dispatcher for building a linear stage cascade.
     if n == 0:
         return rule_base(g, n, load)
     else:
         return rule_cascade(g, n, load)
 
     
-#maybe get rid of     
+# TODO: possibly remove; acts as a validity filter on generated candidates.
 def del_mismatch(graphs):
     keep = []
     for graph in graphs:
@@ -197,6 +167,7 @@ def del_mismatch(graphs):
 
 
 class RC_LP(SubCircuitFactory):
+    """First-order active RC low-pass stage (buffered)."""
     NAME = 'RC_LP'
     NODES = ('input', 'out', '0')
     def __init__(self, R1, C1, gain = 1e6):
@@ -210,6 +181,7 @@ class RC_LP(SubCircuitFactory):
         self.VCVS(1, 'out', '0', n1, 'out', gain)
 
 class SALLEN_KEY_LP(SubCircuitFactory):
+    """Second-order Sallen-Key low-pass stage."""
     NAME = 'SALLEN_KEY_LP'
     NODES = ('input', 'out', '0')
 
@@ -231,6 +203,7 @@ class SALLEN_KEY_LP(SubCircuitFactory):
 
 
 def emit(graphs):
+    # Convert abstract stage graphs into concrete PySpice circuit candidates.
     results = []
     cand = 1
     for graph in graphs:
@@ -245,6 +218,7 @@ def emit(graphs):
             type = attrs.get('type')
             stages = []
             if order == 1:
+                # First-order block is emitted as RC_LP.
                 vals = design_rc_lp(1000, 1, 10e-9)
                 rc_name = f'RC_LP_{cand}_{count}'
                 RC_LP.NAME = rc_name
@@ -257,12 +231,14 @@ def emit(graphs):
                 count += 1
                 o += 1
             elif(topo == 'Sallen-Key_LP'):
+                # Higher-order blocks are decomposed into 2nd-order sections (+ optional 1st-order tail).
                 if(type == '3dbCheb'):
-                    stages = cheb3b_stage_specs(order)
+                    stages = design_chebyshev_type1(order, 1000)
                 elif(type == 'Butterworth'):
-                    stages = butterworth_stage_specs(order)
+                    stages = design_butterworth(order, 1000)
                 for stage in stages:
                     if(stage[1] != None):
+                        # 2nd-order section: use Sallen-Key with section fsf/Q.
                         vals = design_lp_sallen(stage[0], 1000, stage[1], 10e-9)
                         sk_name = f'SALLEN_KEY_LP_{cand}_{count}'
                         SALLEN_KEY_LP.NAME = sk_name
@@ -282,6 +258,7 @@ def emit(graphs):
                         count += 1
                         o += 1
                     elif(stage[1] == None):
+                        # Odd-order remainder: single-pole RC section.
                         vals = design_rc_lp(1000, stage[0], 10e-9)
                         rc_name = f'RC_LP_{cand}_{count}'
                         RC_LP.NAME = rc_name
@@ -299,46 +276,22 @@ def emit(graphs):
         cand+=1
     return results
 
+# def cheb3b_stage_specs(order):
+#     # Return normalized section specs for a given Chebyshev order.
+#     stages = []
+#     for fsf, q in cheb_3db_table[order]:
+#         stages.append((fsf, q))
+#     return stages
 
-
-    #             if(order % 2 == 0):
-    #                 cascades = order // 2
-    #                 for i in range(cascades):
-    #                     circuit.X(f'{count}', 'SALLEN_KEY_LP', f'n{o}', f'n{o+1}', '0')
-    #                     count += 1
-    #                     o += 1
-    #             elif (order % 2 != 0):
-    #                 cascades = order // 2
-    #                 for i in range(cascades):
-    #                     circuit.X(f'{count}', 'SALLEN_KEY_LP', f'n{o}', f'n{o+1}', '0')
-    #                     count += 1
-    #                     o += 1
-    #                 circuit.X(f'{count}', 'RC_LP', f'n{o}', f'n{o+1}', '0')
-    #                 count += 1
-    #                 o += 1
-    #         elif(topo == 'RC_LP'):
-    #             for i in range(order):
-    #                 circuit.X(f'{count}', 'RC_LP', f'n{o}', f'n{o+1}', '0')
-    #                 count += 1
-    #                 o += 1
-    #     results.append(circuit)
-    #     cand += 1
-    # return results
-
-
-def cheb3b_stage_specs(order):
-    stages = []
-    for fsf, q in cheb_3db_table[order]:
-        stages.append((fsf, q))
-    return stages
-
-def butterworth_stage_specs(order):
-    stages = []
-    for fsf, q in butterworth_table[order]:
-        stages.append((fsf, q))
-    return stages
+# def butterworth_stage_specs(order):
+#     # Return normalized section specs for a given Butterworth order.
+#     stages = []
+#     for fsf, q in butterworth_table[order]:
+#         stages.append((fsf, q))
+#     return stages
 
 def design_lp_sallen(fsf, fc, Q, C_val):
+    # Compute equal-C Sallen-Key component values from section specs.
     f0 = fsf * fc
     C1 = C2 = C_val
     R = 1 / (2 * math.pi * C_val * f0)
@@ -358,7 +311,48 @@ def design_lp_sallen(fsf, fc, Q, C_val):
         'C2' : C2,
     }
 
+def design_butterworth(N, fc):
+    wc = 2*math.pi*fc
+    z, p, k = butter(N, wc, btype='low', analog=True, output='zpk')
+    return zpk_to_sections_fsf_Q(p)
+
+def design_chebyshev_type1(N, fc):
+    rp = 3
+    wc = 2*math.pi*fc
+    z, p, k = cheby1(N, rp, wc, btype='low', analog=True, output='zpk')
+    return zpk_to_sections_fsf_Q(p)
+
+def zpk_to_sections_fsf_Q(poles) -> List[Tuple[float, Optional[float]]]:
+    poles = list(poles)
+    used = [False]*len(poles)
+    out = []
+
+    for i, p in enumerate(poles):
+        if used[i]:
+            continue
+        if abs(p.imag) < 1e-12:
+            out.append((abs(p.real), None))
+            used[i] = True
+        else:
+            # find conjugate
+            target = p.conjugate()
+            j = min(
+                (j for j in range(len(poles)) if not used[j] and j != i),
+                key=lambda j: abs(poles[j] - target)
+            )
+            used[i] = used[j] = True
+
+            w0 = abs(p)               # |p|  (rad/s if poles are analog)
+            Q = w0 / (-2.0 * p.real)  # p.real < 0
+            out.append((w0, Q))
+
+    # optional sorting: low-Q first
+    biq = sorted([s for s in out if s[1] is not None], key=lambda x: x[1])
+    fo  = [s for s in out if s[1] is None]
+    return biq + fo
+
 def design_rc_lp(fc, fsf, C_val):
+    # Compute single-pole RC values from cutoff and scaling factor.
     f0 = fsf * fc
     C1 = C_val
     R1 = 1 / (2*math.pi*C_val*f0)
@@ -371,15 +365,19 @@ def design_rc_lp(fc, fsf, C_val):
 
 G = Graph()
 load = 'load'
+# Build an 8-stage abstract cascade.
 apply_rule(G, 8, load)
+# Enumerate all family assignments for those 8 stages.
 type_results = apply_types(G, 8)
 for i in range(len(type_results)):
+    # Collapse adjacent identical-family stages into combined higher-order nodes.
     type_results[i].combine_types()
 
 
 results = apply_topologies(type_results)
-# print (results[67].nodes)
+#print (results[67].nodes)
 
+# Remove candidates that violate the current stage/order constraints.
 p = del_mismatch(results)
 
 print(p[27].nodes)
