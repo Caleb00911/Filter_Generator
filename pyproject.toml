@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "filter-generator"
+version = "0.1.0"
+description = "Candidate generator and PySpice emitter for active low-pass filters."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "PySpice",
+  "scipy",
+]
+
+[project.scripts]
+filter-generator = "filter_generator.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
