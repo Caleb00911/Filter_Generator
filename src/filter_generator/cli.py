@@ -22,8 +22,8 @@ def make_parser():
     parser.add_argument(
         "--emit-out",
         type=str,
-        default=None,
-        help="Write ALL emitted circuit netlists to this file.",
+        default="out/netlist.txt",
+        help="Write ALL emitted circuit netlists to this file (default: out/netlist.txt).",
     )
     return parser
 
