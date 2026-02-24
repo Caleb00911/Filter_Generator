@@ -15,7 +15,6 @@ This project was designed to be used as a design space exploration for analog fi
 - `src/filter_generator/circuits.py` - PySpice subcircuits and emitter
 - `src/filter_generator/pipeline.py` - end-to-end build pipeline
 - `src/filter_generator/cli.py` - command-line entrypoint
-- `rule_engine.py` - compatibility wrapper that calls the new CLI
 
 ## Install
 
